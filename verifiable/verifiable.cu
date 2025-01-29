@@ -102,9 +102,9 @@ struct IsIntegral<hip_bfloat16>: std::false_type {};
 #endif
 #if RCCL_FLOAT8 == 1
 template<>
-struct IsIntegral<rccl_float8>: std::false_type {};
+struct IsIntegral<__hip_fp8_e4m3>: std::false_type {};
 template<>
-struct IsIntegral<rccl_bfloat8>: std::false_type {};
+struct IsIntegral<__hip_fp8_e5m2>: std::false_type {};
 #endif
 }
 
@@ -145,12 +145,12 @@ namespace {
   #endif
   #if RCCL_FLOAT8 == 1
   template<>
-  __host__ __device__ rccl_float8 castTo<rccl_float8>(float x) {
-    return static_cast<rccl_float8>(x);
+  __host__ __device__ __hip_fp8_e4m3 castTo<__hip_fp8_e4m3>(float x) {
+    return static_cast<__hip_fp8_e4m3>(x);
   }
   template<>
-  __host__ __device__ rccl_bfloat8 castTo<rccl_bfloat8>(float x) {
-    return static_cast<rccl_bfloat8>(x);
+  __host__ __device__ __hip_fp8_e5m2 castTo<__hip_fp8_e5m2>(float x) {
+    return static_cast<__hip_fp8_e5m2>(x);
   }
   #endif
 }
@@ -181,11 +181,11 @@ struct ReduceSum {
   }
   #endif
   #if RCCL_FLOAT8 == 1
-  __host__ __device__ rccl_float8 operator()(rccl_float8 a, rccl_float8 b) const {
-      return rccl_float8(static_cast<float>(a) + static_cast<float>(b));
+  __host__ __device__ __hip_fp8_e4m3 operator()(__hip_fp8_e4m3 a, __hip_fp8_e4m3 b) const {
+      return __hip_fp8_e4m3(static_cast<float>(a) + static_cast<float>(b));
   }
-  __host__ __device__ rccl_bfloat8 operator()(rccl_bfloat8 a, rccl_bfloat8 b) const {
-      return rccl_bfloat8(static_cast<float>(a) + static_cast<float>(b));
+  __host__ __device__ __hip_fp8_e5m2 operator()(__hip_fp8_e5m2 a, __hip_fp8_e5m2 b) const {
+      return __hip_fp8_e5m2(static_cast<float>(a) + static_cast<float>(b));
   }
   #endif
   template<typename T>
@@ -205,17 +205,17 @@ struct ReduceProd {
   }
   #endif
   #if RCCL_FLOAT8 == 1
-  __host__ __device__ rccl_float8 operator()(rccl_float8 a, rccl_float8 b) const {
-      return static_cast<rccl_float8>(a * b);
+  __host__ __device__ __hip_fp8_e4m3 operator()(__hip_fp8_e4m3 a, __hip_fp8_e4m3 b) const {
+      return static_cast<__hip_fp8_e4m3>(a * b);
   }
-  __host__ __device__ rccl_float8 operator()(rccl_float8 a, float b) const {
-      return static_cast<rccl_float8>(a * b);
+  __host__ __device__ __hip_fp8_e4m3 operator()(__hip_fp8_e4m3 a, float b) const {
+      return static_cast<__hip_fp8_e4m3>(a * b);
   }
-  __host__ __device__ rccl_bfloat8 operator()(rccl_bfloat8 a, rccl_bfloat8 b) const {
-      return static_cast<rccl_bfloat8>(a * b);
+  __host__ __device__ __hip_fp8_e5m2 operator()(__hip_fp8_e5m2 a, __hip_fp8_e5m2 b) const {
+      return static_cast<__hip_fp8_e5m2>(a * b);
   }
-  __host__ __device__ rccl_bfloat8 operator()(rccl_bfloat8 a, float b) const {
-      return static_cast<rccl_bfloat8>(a * b);
+  __host__ __device__ __hip_fp8_e5m2 operator()(__hip_fp8_e5m2 a, float b) const {
+      return static_cast<__hip_fp8_e5m2>(a * b);
   }
   #endif
   template<typename T>
@@ -235,10 +235,10 @@ struct ReduceMin {
   }
   #endif
   #if RCCL_FLOAT8 == 1
-  __host__ __device__ rccl_float8 operator()(rccl_float8 a, rccl_float8 b) const {
+  __host__ __device__ __hip_fp8_e4m3 operator()(__hip_fp8_e4m3 a, __hip_fp8_e4m3 b) const {
       return static_cast<float>(a) < static_cast<float>(b) ? a : b;
   }
-  __host__ __device__ rccl_bfloat8 operator()(rccl_bfloat8 a, rccl_bfloat8 b) const {
+  __host__ __device__ __hip_fp8_e5m2 operator()(__hip_fp8_e5m2 a, __hip_fp8_e5m2 b) const {
       return static_cast<float>(a) < static_cast<float>(b) ? a : b;
   }
   #endif
@@ -259,10 +259,10 @@ struct ReduceMax {
   }
   #endif
   #if RCCL_FLOAT8 == 1
-  __host__ __device__ rccl_float8 operator()(rccl_float8 a, rccl_float8 b) const {
+  __host__ __device__ __hip_fp8_e4m3 operator()(__hip_fp8_e4m3 a, __hip_fp8_e4m3 b) const {
       return static_cast<float>(a) > static_cast<float>(b) ? a : b;
   }
-  __host__ __device__ rccl_bfloat8 operator()(rccl_bfloat8 a, rccl_bfloat8 b) const {
+  __host__ __device__ __hip_fp8_e5m2 operator()(__hip_fp8_e5m2 a, __hip_fp8_e5m2 b) const {
       return static_cast<float>(a) > static_cast<float>(b) ? a : b;
   }
   #endif
@@ -348,12 +348,12 @@ struct FloatLayout<hip_bfloat16> {
 #endif
 #if RCCL_FLOAT8 == 1
 template<>
-struct FloatLayout<rccl_float8> {
+struct FloatLayout<__hip_fp8_e4m3> {
   static constexpr int exponent_bits = 4, mantissa_bits = 3;
   static constexpr int exponent_bias = (1<<(exponent_bits-1))-1;
 };
 template<>
-struct FloatLayout<rccl_bfloat8> {
+struct FloatLayout<__hip_fp8_e5m2> {
   static constexpr int exponent_bits = 5, mantissa_bits = 2;
   static constexpr int exponent_bias = (1<<(exponent_bits-1))-1;
 };
@@ -890,8 +890,8 @@ void prepareInput1(
   case ncclBfloat16: CASE_TY(hip_bfloat16)
   #endif
   #if HAVE_ncclfp8
-  case ncclFp8E4M3: CASE_TY(rccl_float8)
-  case ncclFp8E5M2: CASE_TY(rccl_bfloat8)
+  case ncclFp8E4M3: CASE_TY(__hip_fp8_e4m3)
+  case ncclFp8E5M2: CASE_TY(__hip_fp8_e5m2)
   #endif
   case ncclFloat32: CASE_TY(float)
   case ncclFloat64: CASE_TY(double)
@@ -970,8 +970,8 @@ void prepareExpected1(
   case ncclBfloat16: CASE_TY(hip_bfloat16)
   #endif
   #if HAVE_ncclfp8
-  case ncclFp8E4M3: CASE_TY(rccl_float8)
-  case ncclFp8E5M2: CASE_TY(rccl_bfloat8)
+  case ncclFp8E4M3: CASE_TY(__hip_fp8_e4m3)
+  case ncclFp8E5M2: CASE_TY(__hip_fp8_e5m2)
   #endif
   case ncclFloat32: CASE_TY(float)
   case ncclFloat64: CASE_TY(double)
@@ -1207,8 +1207,8 @@ void ncclVerifiableVerify(
   case ncclBfloat16: CASE_TY(hip_bfloat16, uint16_t)
   #endif
   #if HAVE_ncclfp8
-  case ncclFp8E4M3: CASE_TY(rccl_float8, uint8_t)
-  case ncclFp8E5M2: CASE_TY(rccl_bfloat8, uint8_t)
+  case ncclFp8E4M3: CASE_TY(__hip_fp8_e4m3, uint8_t)
+  case ncclFp8E5M2: CASE_TY(__hip_fp8_e5m2, uint8_t)
   #endif
   case ncclFloat32: CASE_TY(float, uint32_t)
   case ncclFloat64: CASE_TY(double, uint64_t)
@@ -1278,8 +1278,8 @@ __global__ void sweep() {
     sweep1<hip_bfloat16>(ncclBfloat16, "bfloat16");
   #endif
   #if HAVE_ncclfp8
-    sweep1<rccl_float8>(ncclFp8E4M3, "fp8_e4m3");
-    sweep1<rccl_bfloat8>(ncclFp8E5M2, "fp8_e5m2");
+    sweep1<__hip_fp8_e4m3>(ncclFp8E4M3, "fp8_e4m3");
+    sweep1<__hip_fp8_e5m2>(ncclFp8E5M2, "fp8_e5m2");
   #endif
   sweep1<float>(ncclFloat32, "float");
   sweep1<double>(ncclFloat64, "double");
