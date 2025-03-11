@@ -39,11 +39,11 @@ typedef struct
 } rccl_bfloat8;
 
 // __cplusplus < 201103L || (!defined(__HIP_PLATFORM_AMD__) && !defined(__HIPCC__))
-#elif ROCM_VERSION >= 60200
+#elif HIP_VERSION >= 6020000
 
 #include <hip/hip_fp8.h>
 
-#if HIP_FP8_TYPE_OCP
+#if (defined(__gfx950__) && HIP_FP8_TYPE_OCP)
 typedef __hip_fp8_e4m3 rccl_float8;
 typedef __hip_fp8_e5m2 rccl_bfloat8;
 #else
