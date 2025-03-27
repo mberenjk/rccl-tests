@@ -45,6 +45,11 @@
 #include <cstdint>
 #include <cmath>
 #include <unistd.h>
+#include <cstdlib>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <iostream>
+#include <unordered_map>
 
 using std::size_t;
 using std::int8_t;
@@ -57,7 +62,8 @@ using std::uint32_t;
 using std::uint64_t;
 
 ////////////////////////////////////////////////////////////////////////////////
-
+static bool isGfx94 = false;
+static bool isFp8_b = false;
 namespace {
 template<typename T>
 __device__ unsigned long long bitsOf(T x) {
@@ -323,7 +329,10 @@ struct ReduceAvg {
 
 namespace {
 template<typename T>
-struct FloatLayout;
+struct FloatLayout{
+  static constexpr int exponent_bits = 8, mantissa_bits = 23;
+  static constexpr int exponent_bias = (1<<(exponent_bits-1))-1;
+};
 template<>
 struct FloatLayout<float> {
   static constexpr int exponent_bits = 8, mantissa_bits = 23;
@@ -347,6 +356,18 @@ struct FloatLayout<hip_bfloat16> {
 };
 #endif
 #if RCCL_FLOAT8 == 1
+#if (defined(__gfx942__))
+template<>
+struct FloatLayout<__hip_fp8_e4m3_fnuz> {
+  static constexpr int exponent_bits = 4, mantissa_bits = 3;
+  static constexpr int exponent_bias = (1<<(exponent_bits-1))-1;
+};
+template<>
+struct FloatLayout<__hip_fp8_e5m2_fnuz> {
+  static constexpr int exponent_bits = 5, mantissa_bits = 2;
+  static constexpr int exponent_bias = (1<<(exponent_bits-1))-1;
+};
+#else
 template<>
 struct FloatLayout<rccl_float8> {
   static constexpr int exponent_bits = 4, mantissa_bits = 3;
@@ -357,6 +378,7 @@ struct FloatLayout<rccl_bfloat8> {
   static constexpr int exponent_bits = 5, mantissa_bits = 2;
   static constexpr int exponent_bias = (1<<(exponent_bits-1))-1;
 };
+#endif
 #endif
 
 template<typename T>
@@ -502,12 +524,13 @@ __host__ __device__ void genSumXY(
 
 namespace {
 template<typename T>
-__host__ __device__ T genInOutFloatSum(
+__device__ T genInOutFloatSum(
     bool input_not_output, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     bool same_sign
   ) {
   constexpr int exp_lo = 1 + FloatLayout<T>::mantissa_bits;
   constexpr int exp_hi = (1<<FloatLayout<T>::exponent_bits)-1;
+  
   using uintmant_t = typename std::conditional<(8*sizeof(T) > 32), uint64_t, uint32_t>::type;
   constexpr uintmant_t mant_mask = (uintmant_t(1) << FloatLayout<T>::mantissa_bits)-1;
   constexpr uintmant_t max_mant = 2*mant_mask + 1; // add implicit leading 1
@@ -637,7 +660,7 @@ template<typename T, typename ReduceFn,
          typename = typename std::enable_if<
              !std::is_same<ReduceFn, ReduceNil>::value
            >::type>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReduceFn, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::true_type /*integral*/
   ) {
@@ -655,7 +678,7 @@ __host__ __device__ void genInput(
 
 namespace {
 template<typename T, typename ReduceFn, bool IsIntegral>
-__host__ __device__ void genOutput(
+__device__ void genOutput(
     T &ans, ReduceFn op, int rank_n, uint64_t seed, intptr_t index,
     std::integral_constant<bool, IsIntegral>
   ) {
@@ -672,7 +695,7 @@ __host__ __device__ void genOutput(
 
 namespace {
 template<typename T, bool IsIntegral>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReduceNil, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::integral_constant<bool, IsIntegral>
   ) {
@@ -698,15 +721,18 @@ __host__ __device__ void genOutput(
 
 namespace {
 template<typename T>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReduceSum, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::false_type /*integral*/
   ) {
+#if (defined(__gfx942__))
+#else
   ans = genInOutFloatSum<T>(/*input_not_output=*/true, rank_n, rank_me, seed, index, /*same_sign=*/false);
+#endif
 }
 
 template<typename T>
-__host__ __device__ void genOutput(
+__device__ void genOutput(
     T &ans, ReduceSum, int rank_n, uint64_t seed, intptr_t index,
     std::false_type /*integral*/
   ) {
@@ -719,7 +745,7 @@ __host__ __device__ void genOutput(
 
 namespace {
 template<typename T>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReduceProd, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::false_type /*integral*/
   ) {
@@ -740,7 +766,7 @@ __host__ __device__ void genOutput(
 
 namespace {
 template<typename T>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReducePreMulSum, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::true_type integral
   ) {
@@ -750,7 +776,7 @@ __host__ __device__ void genInput(
 // No genOutput overload specific to premulsum(int), just use generic case.
 
 template<typename T>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReducePreMulSum, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::false_type /*integral*/
   ) {
@@ -758,7 +784,7 @@ __host__ __device__ void genInput(
 }
 
 template<typename T>
-__host__ __device__ void genOutput(
+__device__ void genOutput(
     T &ans, ReducePreMulSum, int rank_n, uint64_t seed, intptr_t index,
     std::false_type /*integral*/
   ) {
@@ -771,7 +797,7 @@ __host__ __device__ void genOutput(
 
 namespace {
 template<typename T>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReduceAvg, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::false_type /*integral*/
   ) {
@@ -779,7 +805,7 @@ __host__ __device__ void genInput(
 }
 
 template<typename T>
-__host__ __device__ void genOutput(
+__device__ void genOutput(
     T &ans, ReduceAvg, int rank_n, uint64_t seed, intptr_t index,
     std::false_type /*integral*/
   ) {
@@ -795,14 +821,14 @@ __host__ __device__ void genOutput(
 
 namespace {
 template<typename T>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReduceMin, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::false_type integral
   ) {
   genInput<T>(ans, ReduceMax(), rank_n, rank_me, seed, index, integral);
 }
 template<typename T>
-__host__ __device__ void genInput(
+__device__ void genInput(
     T &ans, ReduceMax, int rank_n, int rank_me, uint64_t seed, intptr_t index,
     std::false_type /*integral*/
   ) {
@@ -811,12 +837,13 @@ __host__ __device__ void genInput(
   uint64_t rng = hashOf(index ^ index<<16 ^ rank_me, seed);
   int sign = rng & 1;
   rng ^= rng>>1;
-  int exp = rng & ((1<<(FloatLayout<T>::exponent_bits-1))-1);
-  exp += 1<<(FloatLayout<T>::exponent_bits-2);
-  rng ^= rng >> FloatLayout<T>::exponent_bits;
-  uint64_t mant = rng & mant_mask;
-  ans = makeFloat<T>(sign, exp, mant);
-}
+
+    int exp = rng & ((1<<(FloatLayout<T>::exponent_bits-1))-1);
+    exp += 1<<(FloatLayout<T>::exponent_bits-2);
+    rng ^= rng >> FloatLayout<T>::exponent_bits;
+    uint64_t mant = rng & mant_mask;
+    ans = makeFloat<T>(sign, exp, mant); }
+
 
 // No genOutput overload specific to floating point min/max, just use generic case.
 }
@@ -826,7 +853,7 @@ __host__ __device__ void genInput(
 
 namespace {
 template<typename T, typename ReduceFn>
-__host__ __device__ T genInput(
+__device__ T genInput(
     ReduceFn op, int rank_n, int rank_me, uint64_t seed, intptr_t index
   ) {
   T ans;
@@ -871,12 +898,56 @@ __global__ void prepareInput2(
   }
 }
 
+int getArchInfo(bool *isRightArch,  const char *gfx)
+{
+    // Prepare parent->child pipe
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+      std::cerr<<"Unable to create parent->child pipe for getting number of devices\n";
+      return TEST_FAIL;
+    }
+    pid_t pid = fork();
+    if (0 == pid) {
+      bool isGfxTest = false;
+      int dev;
+      hipGetDeviceCount(&dev);
+      for (int deviceId = 0; deviceId < dev; deviceId++) {
+        char gcn[256];
+        hipDeviceProp_t devProp;
+        hipGetDeviceProperties(&devProp, deviceId);
+        char *gcnArchNameToken = strtok(devProp.gcnArchName, ":");
+        strcpy(gcn, gcnArchNameToken);
+        if(std::strncmp(gfx, gcn, 5) == 0) {
+          isGfxTest = true;
+        } else {
+          isGfxTest = false;
+          break;
+        }
+      }
+      if (write(pipefd[1], &isGfxTest, sizeof(isGfxTest)) != sizeof(isGfxTest)) return TEST_FAIL;
+      close(pipefd[0]);
+      close(pipefd[1]);
+      exit(EXIT_SUCCESS);
+    }
+    else {
+      int status;
+      if (read(pipefd[0], isRightArch, sizeof(*isRightArch)) != sizeof(*isRightArch)) return TEST_FAIL;
+      waitpid(pid, &status, 0);
+      assert(!status);
+      close(pipefd[0]);
+      close(pipefd[1]);
+    }
+    return TEST_SUCCESS;
+  }
+
 template<typename ReduceOp>
 void prepareInput1(
     void *elts, intptr_t elt_n, int elt_ty, ReduceOp op, int rank_n, int rank_me,
     uint64_t seed, intptr_t elt_ix0, cudaStream_t stream
   ) {
   int block_n = std::min<intptr_t>(32, (elt_n + 4*512-1)/(4*512));
+  //getArchInfo(&isGfx94, "gfx94");
+  isGfx94 = true;
   #define CASE_TY(T) prepareInput2<<<block_n, 512, 0, stream>>>((T*)elts, elt_n, op, rank_n, rank_me, seed, elt_ix0); break;
   switch(elt_ty) {
   case ncclInt8: CASE_TY(int8_t)
@@ -890,8 +961,14 @@ void prepareInput1(
   case ncclBfloat16: CASE_TY(hip_bfloat16)
   #endif
   #if HAVE_ncclfp8
-  case ncclFp8E4M3: CASE_TY(rccl_float8)
-  case ncclFp8E5M2: CASE_TY(rccl_bfloat8)
+  case ncclFp8E4M3: { 
+    if (isGfx94) CASE_TY(__hip_fp8_e4m3_fnuz)
+    //if(!isGfx94) CASE_TY(rccl_float8)
+  }
+  case ncclFp8E5M2: { 
+    if (isGfx94) CASE_TY(__hip_fp8_e5m2_fnuz) 
+    //if(!isGfx94) CASE_TY(rccl_bfloat8)
+  }
   #endif
   case ncclFloat32: CASE_TY(float)
   case ncclFloat64: CASE_TY(double)
@@ -970,8 +1047,10 @@ void prepareExpected1(
   case ncclBfloat16: CASE_TY(hip_bfloat16)
   #endif
   #if HAVE_ncclfp8
-  case ncclFp8E4M3: CASE_TY(rccl_float8)
-  case ncclFp8E5M2: CASE_TY(rccl_bfloat8)
+  case ncclFp8E4M3: if (isGfx94) CASE_TY(__hip_fp8_e4m3_fnuz)
+  //if (!isGfx94) CASE_TY(rccl_float8)
+  case ncclFp8E5M2: if (isGfx94) CASE_TY(__hip_fp8_e5m2_fnuz)
+  //if (!isGfx94) CASE_TY(rccl_bfloat8)
   #endif
   case ncclFloat32: CASE_TY(float)
   case ncclFloat64: CASE_TY(double)
@@ -1102,6 +1181,74 @@ __global__ void verifyPrepared(
   atomicAdd((unsigned long *)bad_elt_n, (unsigned long)bad);
 }
 
+template<typename Uint, typename ReduceFn>
+__global__ void verifyInline2(
+  __hip_fp8_e5m2_fnuz const *results, intptr_t elt_n, ReduceFn op, int rank_n, uint64_t seed,
+    intptr_t elt_ix0, unsigned tolerance, int64_t *bad_elt_n
+  ) {
+  intptr_t i0 = blockIdx.x*(elt_n/gridDim.x);
+  i0 += blockIdx.x < elt_n%gridDim.x ? blockIdx.x : elt_n%gridDim.x;
+  intptr_t i1 = (blockIdx.x+1)*(elt_n/gridDim.x);
+  i1 += blockIdx.x+1 < elt_n%gridDim.x ? blockIdx.x+1 : elt_n%gridDim.x;
+  intptr_t i = i0 + threadIdx.x;
+  int64_t bad = 0;
+
+  while(i < i1) {
+    union { __hip_fp8_e5m2_fnuz t; Uint u; } a, b;
+    a.t = results[i];
+    b.t = genOutput<__hip_fp8_e5m2_fnuz>(op, rank_n, seed, elt_ix0+i);
+    Uint delta = a.u < b.u ? b.u - a.u : a.u - b.u;
+    bad += tolerance < delta ? 1 : 0;
+    #if 0
+    __hip_fp8_e5m2_fnuz input = genInput<T>(op, rank_n, 0, seed, elt_ix0+i);
+      if(tolerance < delta) {
+        printf("verifyInline2 fail T=%d ix=%lld got=%g exp=%g input=%g\n",
+          std::is_same<T,int>::value, (long long)i, (float)a.t, (float)b.t, (float)input);
+      } else {
+        printf("verifyInline2 pass T=%d ix=%lld got=%g exp=%g input=%g\n",
+          std::is_same<T,int>::value, (long long)i, (float)a.t, (float)b.t, (float)input);
+      }
+    #endif
+    i += blockDim.x;
+  }
+  //asm volatile("red.global.add.u64 [%0],%1;" :: "l"(bad_elt_n), "l"(bad));
+  atomicAdd((unsigned long*)bad_elt_n, (unsigned long)bad);
+}
+
+template<typename Uint, typename ReduceFn>
+__global__ void verifyInline2(
+  __hip_fp8_e4m3_fnuz const *results, intptr_t elt_n, ReduceFn op, int rank_n, uint64_t seed,
+    intptr_t elt_ix0, unsigned tolerance, int64_t *bad_elt_n
+  ) {
+  intptr_t i0 = blockIdx.x*(elt_n/gridDim.x);
+  i0 += blockIdx.x < elt_n%gridDim.x ? blockIdx.x : elt_n%gridDim.x;
+  intptr_t i1 = (blockIdx.x+1)*(elt_n/gridDim.x);
+  i1 += blockIdx.x+1 < elt_n%gridDim.x ? blockIdx.x+1 : elt_n%gridDim.x;
+  intptr_t i = i0 + threadIdx.x;
+  int64_t bad = 0;
+
+  while(i < i1) {
+    union { __hip_fp8_e4m3_fnuz t; Uint u; } a, b;
+    a.t = results[i];
+    b.t = genOutput<__hip_fp8_e4m3_fnuz>(op, rank_n, seed, elt_ix0+i);
+    Uint delta = a.u < b.u ? b.u - a.u : a.u - b.u;
+    bad += tolerance < delta ? 1 : 0;
+    #if 0
+    __hip_fp8_e4m3_fnuz input = genInput<T>(op, rank_n, 0, seed, elt_ix0+i);
+      if(tolerance < delta) {
+        printf("verifyInline2 fail T=%d ix=%lld got=%g exp=%g input=%g\n",
+          std::is_same<T,int>::value, (long long)i, (float)a.t, (float)b.t, (float)input);
+      } else {
+        printf("verifyInline2 pass T=%d ix=%lld got=%g exp=%g input=%g\n",
+          std::is_same<T,int>::value, (long long)i, (float)a.t, (float)b.t, (float)input);
+      }
+    #endif
+    i += blockDim.x;
+  }
+  //asm volatile("red.global.add.u64 [%0],%1;" :: "l"(bad_elt_n), "l"(bad));
+  atomicAdd((unsigned long*)bad_elt_n, (unsigned long)bad);
+}
+
 template<typename T, typename Uint, typename ReduceFn>
 __global__ void verifyInline2(
     T const *results, intptr_t elt_n, ReduceFn op, int rank_n, uint64_t seed,
@@ -1138,13 +1285,21 @@ __global__ void verifyInline2(
 
 template<typename T, typename Uint>
 void verifyInline1(
-    T const *results, intptr_t elt_n, int red_op, int rank_n, uint64_t seed, intptr_t elt_ix0,
+    T const *results, intptr_t elt_n, int elt_ty, int red_op, int rank_n, uint64_t seed, intptr_t elt_ix0,
     unsigned tolerance, int64_t *bad_elt_n, cudaStream_t stream, int block_n
   ) {
   #define CASE_OP(op) \
     if(rank_n == 1) \
     verifyInline2<T, Uint><<<block_n, 512, 0, stream>>> \
       ((T const*)results, elt_n, ReduceNil(), rank_n, seed, elt_ix0, tolerance, bad_elt_n); \
+    else \
+    if(isGfx94) \
+    switch(elt_ty){ \
+      case ncclFp8E4M3: verifyInline2<__hip_fp8_e4m3_fnuz, Uint><<<block_n, 512, 0, stream>>> \
+      ((__hip_fp8_e4m3_fnuz const*)results, elt_n, op, rank_n, seed, elt_ix0, tolerance, bad_elt_n); \
+      case ncclFp8E5M2: verifyInline2<__hip_fp8_e5m2_fnuz, Uint><<<block_n, 512, 0, stream>>> \
+      ((__hip_fp8_e5m2_fnuz const*)results, elt_n, op, rank_n, seed, elt_ix0, tolerance, bad_elt_n); \
+    } \
     else \
     verifyInline2<T, Uint><<<block_n, 512, 0, stream>>> \
       ((T const*)results, elt_n, op, rank_n, seed, elt_ix0, tolerance, bad_elt_n); \
@@ -1192,7 +1347,7 @@ void ncclVerifiableVerify(
       if(expected != nullptr) { \
         verifyPrepared<<<block_n, 512, 0, stream>>>((Uint const*)results, (Uint const*)expected, elt_n, tolerance, bad_elt_n); \
       } else { \
-        verifyInline1<T, Uint>((T const*)results, elt_n, red_op, rank_n, seed, elt_ix0, tolerance, bad_elt_n, stream, block_n); \
+        verifyInline1<T, Uint>((T const*)results, elt_n, elt_ty, red_op, rank_n, seed, elt_ix0, tolerance, bad_elt_n, stream, block_n); \
       } \
     } break;
   switch(elt_ty) {
@@ -1207,8 +1362,10 @@ void ncclVerifiableVerify(
   case ncclBfloat16: CASE_TY(hip_bfloat16, uint16_t)
   #endif
   #if HAVE_ncclfp8
-  case ncclFp8E4M3: CASE_TY(rccl_float8, uint8_t)
-  case ncclFp8E5M2: CASE_TY(rccl_bfloat8, uint8_t)
+  case ncclFp8E4M3: if(isGfx94) CASE_TY(__hip_fp8_e4m3_fnuz, uint8_t) \
+  //CASE_TY(rccl_float8, uint8_t)
+  case ncclFp8E5M2: if(isGfx94) CASE_TY(__hip_fp8_e5m2_fnuz, uint8_t) \
+  //CASE_TY(rccl_bfloat8, uint8_t)
   #endif
   case ncclFloat32: CASE_TY(float, uint32_t)
   case ncclFloat64: CASE_TY(double, uint64_t)
