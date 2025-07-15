@@ -22,18 +22,14 @@
 #endif
 
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2,10,0) && RCCL_FLOAT8 == 1
-#if __HIP_DEVICE_COMPILE__
-  #define HAVE_ncclfp8_DEVICE 1
-#else
-  #define HAVE_ncclfp8_HOST 1
-#endif
+  #define HAVE_ncclFloat8 1
 // Ensures backward compatibility for FP8 datatypes
 #if NCCL_VERSION_CODE < NCCL_VERSION(2,24,3)
   #define ncclFloat8e4m3 ncclFp8E4M3
   #define ncclFloat8e5m2 ncclFp8E5M2
 #endif
 #else
-  #define HAVE_ncclfp8 0
+  #define HAVE_ncclFloat8 0
 #endif
 
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2,10,0)
@@ -109,7 +105,8 @@ struct IsIntegral<__half>: std::false_type {};
 template<>
 struct IsIntegral<hip_bfloat16>: std::false_type {};
 #endif
-#if RCCL_FLOAT8 == 1
+
+#if HAVE_ncclFloat8
 template<>
 struct IsIntegral<rccl_float8>: std::false_type {};
 template<>
@@ -142,6 +139,7 @@ namespace {
   __host__ __device__ Y castTo(float x) {
     return Y(x);
   }
+
   template<typename Y>
   __host__ __device__ Y castTo(double x) {
     return Y(x);
@@ -154,6 +152,7 @@ namespace {
   __host__ __device__ half castTo<__half>(uint64_t x) {
     return __ull2half_rn(x);
   }
+
   #if RCCL_BFLOAT16 == 1
   template<>
   __host__ __device__ hip_bfloat16 castTo<hip_bfloat16>(float x) {
@@ -168,7 +167,7 @@ namespace {
     return hip_bfloat16((double)x);
   }
   #endif
-  #if RCCL_FLOAT8 == 1
+  #if HAVE_ncclFloat8
   template<>
   __host__ __device__ rccl_float8 castTo<rccl_float8>(float x) {
     return static_cast<rccl_float8>(x);
@@ -195,7 +194,6 @@ namespace {
   }
   #endif
 }
-
 ////////////////////////////////////////////////////////////////////////////////
 // The reduction functions
 
@@ -221,7 +219,7 @@ struct ReduceSum {
       return hip_bfloat16(static_cast<float>(a) + static_cast<float>(b));
   }
   #endif
-  #if RCCL_FLOAT8 == 1
+  #if HAVE_ncclFloat8
   __host__ __device__ rccl_float8 operator()(rccl_float8 a, rccl_float8 b) const {
       return rccl_float8(static_cast<float>(a) + static_cast<float>(b));
   }
@@ -229,6 +227,7 @@ struct ReduceSum {
       return rccl_bfloat8(static_cast<float>(a) + static_cast<float>(b));
   }
   #endif
+
   template<typename T>
   __host__ __device__ T postOp(T x) const { return x; }
 };
@@ -245,7 +244,7 @@ struct ReduceProd {
       return hip_bfloat16(static_cast<float>(a) * static_cast<float>(b));
   }
   #endif
-  #if RCCL_FLOAT8 == 1
+  #if HAVE_ncclFloat8
   __host__ __device__ rccl_float8 operator()(rccl_float8 a, rccl_float8 b) const {
       return static_cast<rccl_float8>(float(a) * float(b));
   }
@@ -259,6 +258,7 @@ struct ReduceProd {
       return static_cast<rccl_bfloat8>(float(a) * float(b));
   }
   #endif
+
   template<typename T>
   __host__ __device__ T postOp(T x) const { return x; }
 };
@@ -275,7 +275,7 @@ struct ReduceMin {
       return static_cast<float>(a) < static_cast<float>(b) ? a : b;
   }
   #endif
-  #if RCCL_FLOAT8 == 1
+  #if HAVE_ncclFloat8
   __host__ __device__ rccl_float8 operator()(rccl_float8 a, rccl_float8 b) const {
       return static_cast<float>(a) < static_cast<float>(b) ? a : b;
   }
@@ -294,12 +294,13 @@ struct ReduceMax {
   __host__ __device__ __half operator()(__half a, __half b) const {
       return __half2float(a) > __half2float(b) ? a : b;
   }
+
   #if RCCL_BFLOAT16 == 1
   __host__ __device__ hip_bfloat16 operator()(hip_bfloat16 a, hip_bfloat16 b) const {
       return static_cast<float>(a) > static_cast<float>(b) ? a : b;
   }
   #endif
-  #if RCCL_FLOAT8 == 1
+  #if HAVE_ncclFloat8
   __host__ __device__ rccl_float8 operator()(rccl_float8 a, rccl_float8 b) const {
       return static_cast<float>(a) > static_cast<float>(b) ? a : b;
   }
@@ -391,7 +392,7 @@ struct FloatLayout<hip_bfloat16> {
   static constexpr int exponent_bias = (1<<(exponent_bits-1))-1;
 };
 #endif
-#if RCCL_FLOAT8 == 1
+#if HAVE_ncclFloat8
 #if __HIP_DEVICE_COMPILE__ || HIP_VERSION < 60300000
 template<>
 struct FloatLayout<rccl_float8> {
@@ -864,7 +865,7 @@ __host__ __device__ void genOutput(
 namespace {
 template<typename T>
 __host__ __device__ void genInput(
-  T &ans, ReduceAvg, int rank_n, int rank_me, uint64_t rng, intptr_t index,
+    T &ans, ReduceAvg, int rank_n, int rank_me, uint64_t rng, intptr_t index,
     std::false_type /*integral*/
   ) {
   // We can't control the nranks divisor in avareages so to control error we
@@ -953,7 +954,6 @@ __host__ __device__ T genOutput(
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#if !SELF_TEST
 namespace {
 template<typename T, typename ReduceFn>
 __global__ void __launch_bounds__(512, 1) prepareInput2(
@@ -993,18 +993,18 @@ cudaError_t prepareInput1(
   #if HAVE_ncclBfloat16
   case ncclBfloat16: fn = (void const*)&prepareInput2<hip_bfloat16, ReduceOp>; break;
   #endif
-  #if HAVE_ncclfp8_DEVICE || HIP_VERSION < 60300000
+  case ncclFloat32: fn = (void const*)&prepareInput2<float, ReduceOp>; break;
+  case ncclFloat64: fn = (void const*)&prepareInput2<double, ReduceOp>; break;
+  default: assert(0); return cudaErrorInvalidValue;
+  #if (HAVE_ncclFloat8 && __HIP_DEVICE_COMPILE__) || HIP_VERSION < 60300000
   case ncclFloat8e4m3: fn = (void const*)&prepareInput2<rccl_float8, ReduceOp>; break;
   case ncclFloat8e5m2: fn = (void const*)&prepareInput2<rccl_bfloat8, ReduceOp>; break;
-  #elif HAVE_ncclfp8_HOST
+  #elif HAVE_ncclFloat8 && !__HIP_DEVICE_COMPILE__
   case ncclFloat8e4m3: if (rccl_float8_useFnuz) { fn = (void const*)&prepareInput2<__hip_fp8_e4m3_fnuz, ReduceOp>; break;}
   else { fn = (void const*)&prepareInput2<__hip_fp8_e4m3, ReduceOp>; break;}
   case ncclFloat8e5m2: if (rccl_float8_useFnuz) { fn = (void const*)&prepareInput2<__hip_fp8_e5m2_fnuz, ReduceOp>; break;}
   else { fn = (void const*)&prepareInput2<__hip_fp8_e5m2, ReduceOp>; break;}
   #endif
-  case ncclFloat32: fn = (void const*)&prepareInput2<float, ReduceOp>; break;
-  case ncclFloat64: fn = (void const*)&prepareInput2<double, ReduceOp>; break;
-  default: assert(0); return cudaErrorInvalidValue;
   }
   #undef CASE_TY
   dim3 grid = {1, 1, 1};
@@ -1040,11 +1040,8 @@ hipError_t ncclVerifiablePrepareInput(
   }
   #undef CASE_OP
 }
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
-
-#if !SELF_TEST
 namespace {
 template<typename T, typename ReduceFn>
 __global__ void __launch_bounds__(512, 1) prepareExpected2(
@@ -1083,20 +1080,20 @@ cudaError_t prepareExpected1(
   #if HAVE_ncclBfloat16
   case ncclBfloat16: fn = (void const*)&prepareExpected2<hip_bfloat16, ReduceOp>; break;
   #endif
-  #if HAVE_ncclfp8_DEVICE || HIP_VERSION < 60300000 //for backward compatibility
-  case ncclFloat8e4m3: fn = (void const*)&prepareExpected2<rccl_float8, ReduceOp>; break;
-  case ncclFloat8e5m2: fn = (void const*)&prepareExpected2<rccl_bfloat8, ReduceOp>; break;
-  #elif HAVE_ncclfp8_HOST
-  case ncclFloat8e4m3: if (rccl_float8_useFnuz) { fn = (void const*)&prepareExpected2<__hip_fp8_e4m3_fnuz, ReduceOp>; break; }
-  else { fn = (void const*)&prepareExpected2<__hip_fp8_e4m3, ReduceOp>; break; }
-  case ncclFloat8e5m2: if (rccl_float8_useFnuz) { fn = (void const*)&prepareExpected2<__hip_fp8_e5m2_fnuz, ReduceOp>; break; }
-  else { fn = (void const*)&prepareExpected2<__hip_fp8_e5m2, ReduceOp>; break; }
+  #if (HAVE_ncclFloat8 && __HIP_DEVICE_COMPILE__) || HIP_VERSION < 60300000 //for backward compatibility
+    case ncclFloat8e4m3: fn = (void const*)&prepareExpected2<rccl_float8, ReduceOp>; break;
+    case ncclFloat8e5m2: fn = (void const*)&prepareExpected2<rccl_bfloat8, ReduceOp>; break;
+  #elif HAVE_ncclFloat8 && !__HIP_DEVICE_COMPILE__
+    case ncclFloat8e4m3: if (rccl_float8_useFnuz) { fn = (void const*)&prepareExpected2<__hip_fp8_e4m3_fnuz, ReduceOp>; break; }
+    else fn = (void const*)&prepareExpected2<__hip_fp8_e4m3, ReduceOp>; break;
+    case ncclFloat8e5m2: if (rccl_float8_useFnuz) { fn = (void const*)&prepareExpected2<__hip_fp8_e5m2_fnuz, ReduceOp>; break; }
+  #else fn = (void const*)&prepareExpected2<__hip_fp8_e5m2, ReduceOp>; break;
   #endif
-  case ncclFloat32: { fn = (void const*)&prepareExpected2<float, ReduceOp>; break; }
-  case ncclFloat64: { fn = (void const*)&prepareExpected2<double, ReduceOp>; break; }
+  case ncclFloat32: fn = (void const*)&prepareExpected2<float, ReduceOp>; break;
+  case ncclFloat64: fn = (void const*)&prepareExpected2<double, ReduceOp>; break;
   default: assert(0); return cudaErrorInvalidValue;
   }
-
+  #undef CASE_TY
   dim3 grid = {1, 1, 1};
   grid.x = (unsigned int)std::min<intptr_t>(32, (elt_n + 4*512-1)/(4*512));
   dim3 block = {512, 1, 1};
@@ -1130,7 +1127,6 @@ hipError_t ncclVerifiablePrepareExpected(
   }
   #undef CASE_OP
 }
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1151,7 +1147,6 @@ __host__ __device__  uint64_t calcDelta(T a, T b) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#if !SELF_TEST
 namespace {
 template<typename T>
 __global__ void __launch_bounds__(512, 1) verifyPrepared(
@@ -1199,6 +1194,7 @@ hipError_t verifyPrepared1(int bytePerElt,
 
 template<typename T, typename Uint, typename ReduceFn>
 __global__ void __launch_bounds__(512, 1) verifyInline2(
+
     T const *results, intptr_t elt_n, ReduceFn op, int rank_n, uint64_t seed,
     intptr_t elt_ix0, unsigned tolerance, int64_t *bad_elt_n
   ) {
@@ -1227,7 +1223,7 @@ __global__ void __launch_bounds__(512, 1) verifyInline2(
     #endif
     i += blockDim.x;
   }
-  //asm volatile("red.global.add.u64 [%0],%1;" :: "l"(bad_elt_n), "l"(bad));
+  //asm volatile("red.global.add.u64 [%0],%1;" :: "l"(bad_elt_n), "l"(bad) : "memory");
   atomicAdd((unsigned long*)bad_elt_n, (unsigned long)bad);
 }
 
@@ -1245,7 +1241,6 @@ hipError_t verifyInline1(
   ReduceAvg opavg{rank_n};
   ReducePreMulSum oppremulsum;
   void *args[8] = {&results, &elt_n, nullptr, &rank_n, &seed, &elt_ix0, &tolerance, &bad_elt_n};
-
   #define CASE_OP(op) \
     if(rank_n == 1) { \
       fn = (void const*)&verifyInline2<T, Uint, ReduceNil>; \
@@ -1283,13 +1278,22 @@ hipError_t ncclVerifiableVerify(
   #if HAVE_ncclBfloat16
     floating |= elt_ty == ncclBfloat16;
   #endif
-  #if HAVE_ncclfp8_DEVICE || HAVE_ncclfp8_HOST
+  #if HAVE_ncclFloat8
     floating |= elt_ty == ncclFloat8e4m3;
     floating |= elt_ty == ncclFloat8e5m2;
   #endif
+  
 
   unsigned tolerance = 0;
   #if HAVE_ncclAvg
+  if (floating && red_op == ncclAvg) {
+    // Average does it's pre-multiplies in an unspecified floating point format
+    // (could be the actual type T or float or half). That means the premultiply
+    // verify does could generate a discrepancy in the least mantissa digit. After
+    // adding those two (since avg only has two non-zero contributions) we could
+    // be off by a distance of 2 units.
+    tolerance = 2;
+  }
   if (floating && red_op == ncclAvg) {
     // Average does it's pre-multiplies in an unspecified floating point format
     // (could be the actual type T or float or half). That means the premultiply
@@ -1321,10 +1325,10 @@ hipError_t ncclVerifiableVerify(
   #if HAVE_ncclBfloat16
   case ncclBfloat16: CASE_TY(hip_bfloat16, uint16_t)
   #endif
-  #if HAVE_ncclfp8_DEVICE || HIP_VERSION < 60300000
+  #if (HAVE_ncclFloat8 && __HIP_DEVICE_COMPILE__) || HIP_VERSION < 60300000
   case ncclFloat8e4m3: CASE_TY(rccl_float8, uint8_t)
   case ncclFloat8e5m2: CASE_TY(rccl_bfloat8, uint8_t)
-  #elif HAVE_ncclfp8_HOST
+  #elif HAVE_ncclFloat8 && !__HIP_DEVICE_COMPILE__
   case ncclFloat8e4m3: if (rccl_float8_useFnuz) { CASE_TY(__hip_fp8_e4m3_fnuz, uint8_t);}
   else { CASE_TY(__hip_fp8_e4m3, uint8_t);}
   case ncclFloat8e5m2: if (rccl_float8_useFnuz) { CASE_TY(__hip_fp8_e5m2_fnuz, uint8_t);}
@@ -1336,13 +1340,10 @@ hipError_t ncclVerifiableVerify(
   }
   #undef CASE_TY
 }
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#if SELF_TEST
-#include <iostream>
-
+namespace {
 template<typename T, typename Op>
 __device__ void sweep2(int ty, char const *tyname, Op op, char const *opname, int rank_n) {
   //if(!std::is_same<T,half>::value) return;
@@ -1397,16 +1398,16 @@ __global__ void __launch_bounds__(512, 1) sweep() {
   #if HAVE_ncclBfloat16
     sweep1<hip_bfloat16>(ncclBfloat16, "bfloat16");
   #endif
-  #if HAVE_ncclfp8 && __HIP_DEVICE_COMPILE__
+  #if HAVE_ncclFloat8 && __HIP_DEVICE_COMPILE__
     sweep1<rccl_float8>(ncclFloat8e4m3, "fp8_e4m3");
     sweep1<rccl_bfloat8>(ncclFloat8e5m2, "fp8_e5m2");
   #endif
   sweep1<float>(ncclFloat32, "float");
   sweep1<double>(ncclFloat64, "double");
 }
+}
 
 void ncclVerifiableLaunchSelfTest() {
   sweep<<<1,512>>>();
   sweep<<<1,512>>>();
 }
-#endif
